@@ -4,8 +4,6 @@
 # Fixes black screen of death by downloading and flashing a working BIOS
 # https://github.com/marceli1404/SteamDeck-BIOS-Fix
 
-set -e
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -220,6 +218,13 @@ fi
 # =====================
 step "7/7 - Flashing BIOS"
 
+# Check flash tool exists
+if [ ! -f /usr/share/jupiter_bios_updater/h2offt ]; then
+    error "Flash tool not found: /usr/share/jupiter_bios_updater/h2offt"
+    error "Is this a Steam Deck running SteamOS?"
+    exit 1
+fi
+
 # Create backup
 echo "Creating BIOS backup..."
 mkdir -p ~/BIOS_backup 2>/dev/null
@@ -240,12 +245,19 @@ info "Auto-updates blocked"
 echo "Flashing $CHOICE... DO NOT POWER OFF!"
 echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt \
     "${BIOS_DIR}/${CHOICE}" -all
+FLASH_RESULT=$?
 
 echo ""
 echo "============================================"
-info "BIOS flash complete!"
-info "Backup: ~/BIOS_backup/"
-echo "============================================"
-echo ""
-echo "Reboot to apply changes."
-echo -e "$PASSWORD\n" | sudo -S reboot
+if [ $FLASH_RESULT -eq 0 ]; then
+    info "BIOS flash complete!"
+    info "Backup: ~/BIOS_backup/"
+    echo "============================================"
+    echo ""
+    echo "Reboot to apply changes."
+    echo -e "$PASSWORD\n" | sudo -S reboot
+else
+    error "BIOS flash failed (exit code: $FLASH_RESULT)"
+    error "Check if /usr/share/jupiter_bios_updater/h2offt exists"
+    error "Do NOT reboot — BIOS may be in an inconsistent state"
+fi

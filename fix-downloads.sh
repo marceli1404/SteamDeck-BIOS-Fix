@@ -4,8 +4,6 @@
 # Fixes MD5 hash check failures caused by silent curl failures
 # https://github.com/marceli1404/SteamDeck-BIOS-Fix
 
-set -e
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
