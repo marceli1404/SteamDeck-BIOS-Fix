@@ -6,14 +6,14 @@ Fixes the **"md5 hash check failed"** error in [SteamDeck-BIOS-Manager](https://
 
 Copy and paste this into the Steam Deck terminal:
 ```bash
-rm -rf ~/SteamDeck-BIOS-Fix && git clone https://github.com/marceli1404/SteamDeck-BIOS-Fix.git && cd ~/SteamDeck-BIOS-Fix && chmod +x *.sh && ./install-bios.sh
+rm -rf ~/SteamDeck-BIOS-Fix 2>/dev/null; git clone https://github.com/marceli1404/SteamDeck-BIOS-Fix.git ~/SteamDeck-BIOS-Fix && cd ~/SteamDeck-BIOS-Fix && chmod +x *.sh && ./install-bios.sh
 ```
 
 ## Quick Diagnose
 
 If the install fails, run this to see why:
 ```bash
-rm -rf ~/SteamDeck-BIOS-Fix && git clone https://github.com/marceli1404/SteamDeck-BIOS-Fix.git && cd ~/SteamDeck-BIOS-Fix && chmod +x *.sh && ./diagnose.sh
+rm -rf ~/SteamDeck-BIOS-Fix 2>/dev/null; git clone https://github.com/marceli1404/SteamDeck-BIOS-Fix.git ~/SteamDeck-BIOS-Fix && cd ~/SteamDeck-BIOS-Fix && chmod +x *.sh && ./diagnose.sh
 ```
 
 Paste the output and we'll figure out what's wrong.
