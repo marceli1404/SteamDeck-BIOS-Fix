@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Bash syntax
+        run: |
+          bash -n diagnose.sh
+          bash -n fix-downloads.sh
+          bash -n install-bios.sh
+          bash -n steamdeck-BIOS-manager.sh
