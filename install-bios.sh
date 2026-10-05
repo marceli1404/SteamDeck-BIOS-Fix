@@ -30,18 +30,22 @@ echo ""
 # =====================
 step "1/7 - Checking prerequisites"
 
-# Check sudo
-if [ "$(passwd --status $(whoami) 2>/dev/null | tr -s " " | cut -d " " -f 2)" != "P" ]; then
-    error "Sudo password not set. Set one first: passwd"
+# Authenticate sudo without keeping the password in a shell variable.
+# Authenticate sudo without storing the password in a shell variable.
+SUDO_ASKPASS_HELPER=$(mktemp)
+cat > "$SUDO_ASKPASS_HELPER" <<'EOF'
+#!/bin/sh
+exec zenity --password --title "sudo Password Authentication"
+EOF
+chmod 700 "$SUDO_ASKPASS_HELPER"
+export SUDO_ASKPASS="$SUDO_ASKPASS_HELPER"
+sudo() { command sudo -A "$@"; }
+trap 'rm -f "$SUDO_ASKPASS_HELPER"' EXIT
+if ! sudo -v >/dev/null 2>&1; then
+    echo "Sudo authentication failed."
     exit 1
 fi
-PASSWORD=$(zenity --password --title "sudo Password" --width 300 2>/dev/null)
-echo -e "$PASSWORD\n" | sudo -S ls &> /dev/null
-if [ $? -ne 0 ]; then
-    error "Wrong sudo password"
-    exit 1
-fi
-info "Sudo password OK"
+info "Sudo authentication OK"
 
 # Check model
 MODEL=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
@@ -71,9 +75,9 @@ step "2/7 - Checking network and SSL"
 
 if ! curl -sI --connect-timeout 10 https://gitlab.com > /dev/null 2>&1; then
     warn "SSL to gitlab.com failed. Fixing..."
-    echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable 2>/dev/null
-    echo -e "$PASSWORD\n" | sudo -S pacman -S --noconfirm ca-certificates 2>/dev/null
-    echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable 2>/dev/null
+    sudo steamos-readonly disable 2>/dev/null
+    sudo pacman -S --noconfirm ca-certificates 2>/dev/null
+    sudo steamos-readonly enable 2>/dev/null
     if curl -sI --connect-timeout 10 https://gitlab.com > /dev/null 2>&1; then
         info "SSL fixed"
     else
@@ -228,22 +232,22 @@ fi
 # Create backup
 echo "Creating BIOS backup..."
 mkdir -p ~/BIOS_backup 2>/dev/null
-echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt \
+sudo /usr/share/jupiter_bios_updater/h2offt \
     ~/BIOS_backup/jupiter-${BIOS_VERSION}-backup-$(date +%Y%m%d).bin -O 2>/dev/null
 info "Backup saved to ~/BIOS_backup/"
 
 # Block auto-updates
 echo "Blocking automatic BIOS updates..."
-echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable 2>/dev/null
-echo -e "$PASSWORD\n" | sudo -S systemctl mask jupiter-biosupdate 2>/dev/null
-echo -e "$PASSWORD\n" | sudo -S mkdir -p /foxnet/bios/ 2>/dev/null
-echo -e "$PASSWORD\n" | sudo -S touch /foxnet/bios/INHIBIT 2>/dev/null
-echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable 2>/dev/null
+sudo steamos-readonly disable 2>/dev/null
+sudo systemctl mask jupiter-biosupdate 2>/dev/null
+sudo mkdir -p /foxnet/bios/ 2>/dev/null
+sudo touch /foxnet/bios/INHIBIT 2>/dev/null
+sudo steamos-readonly enable 2>/dev/null
 info "Auto-updates blocked"
 
 # Flash
 echo "Flashing $CHOICE... DO NOT POWER OFF!"
-echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt \
+sudo /usr/share/jupiter_bios_updater/h2offt \
     "${BIOS_DIR}/${CHOICE}" -all
 FLASH_RESULT=$?
 
@@ -255,7 +259,7 @@ if [ $FLASH_RESULT -eq 0 ]; then
     echo "============================================"
     echo ""
     echo "Reboot to apply changes."
-    echo -e "$PASSWORD\n" | sudo -S reboot
+    sudo reboot
 else
     error "BIOS flash failed (exit code: $FLASH_RESULT)"
     error "Check if /usr/share/jupiter_bios_updater/h2offt exists"
