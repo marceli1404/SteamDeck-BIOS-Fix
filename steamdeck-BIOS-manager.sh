@@ -148,7 +148,9 @@ then
 					echo "Preparing confirmed USB device: $USB_DEVICE"
 					while read -r part
 					do
-						[ "$part" = "$USB_DEVICE" ] || sudo umount "$part" &> /dev/null || true
+						if [ "$part" != "$USB_DEVICE" ]; then
+							sudo umount "$part" &> /dev/null || true
+						fi
 					done < <(lsblk -lnpo NAME "$USB_DEVICE")
 
 					sudo wipefs -a "$USB_DEVICE"
