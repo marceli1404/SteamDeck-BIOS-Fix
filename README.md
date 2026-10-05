@@ -62,6 +62,12 @@ cp ~/SteamDeck-BIOS-Fix/BIOS/*.fd ~/SteamDeck-BIOS-Manager/BIOS/
 - Internet connection
 - `sudo` password set
 
+## Safety
+
+- The scripts now use normal `sudo` credential caching (`sudo -v`) and do not keep your sudo password in a shell variable.
+- Crisis Mode no longer assumes the USB drive is `/dev/sda`. It lists removable/USB disks, rejects a selected disk containing critical mounted filesystems, and requires you to type the exact device path before any `wipefs` operation.
+- BIOS flashing is inherently risky. Keep the Deck on reliable power and do not interrupt a flash once it starts.
+
 ## Files
 
 | File | Purpose |
