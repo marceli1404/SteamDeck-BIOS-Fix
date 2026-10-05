@@ -1,0 +1,22 @@
+name: Shell syntax
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: |
+          bash -n diagnose.sh
+          bash -n fix-downloads.sh
+          bash -n install-bios.sh
+          bash -n steamdeck-BIOS-manager.sh
