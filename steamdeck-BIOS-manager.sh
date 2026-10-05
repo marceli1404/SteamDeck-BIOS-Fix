@@ -7,21 +7,19 @@ echo https://github.com/ryanrudolfoba/SteamDeck-BIOS-Manager
 echo Easily unlock, download, flash, create BIOS backups, and block / unblock BIOS updates!
 sleep 2
 
-# Password sanity check - make sure sudo password is already set by end user!
-if [ "$(passwd --status $(whoami) | tr -s " " | cut -d " " -f 2)" == "P" ]
-then
-	PASSWORD=$(zenity --password --title "sudo Password Authentication")
-	echo -e "$PASSWORD\n" | sudo -S ls &> /dev/null
-	if [ $? -ne 0 ]
-	then
-		echo sudo password is wrong! | \
-		zenity --text-info --title "Steam Deck BIOS Manager" --width 400 --height 200
-		exit
-	fi
-else
-	echo Sudo password is blank! Setup a sudo password first and then re-run script!
-	passwd
-	exit
+# Authenticate sudo without storing the password in a shell variable.
+SUDO_ASKPASS_HELPER=$(mktemp)
+cat > "$SUDO_ASKPASS_HELPER" <<'EOF'
+#!/bin/sh
+exec zenity --password --title "sudo Password Authentication"
+EOF
+chmod 700 "$SUDO_ASKPASS_HELPER"
+export SUDO_ASKPASS="$SUDO_ASKPASS_HELPER"
+sudo() { command sudo -A "$@"; }
+trap 'rm -f "$SUDO_ASKPASS_HELPER"' EXIT
+if ! sudo -v >/dev/null 2>&1; then
+    echo "Sudo authentication failed."
+    exit 1
 fi
 
 # display warning / disclaimer
@@ -47,9 +45,8 @@ MODEL=$(cat /sys/class/dmi/id/board_name)
 # capture the BIOS version
 BIOS_VERSION=$(cat /sys/class/dmi/id/bios_version)
 
-# capture USB flash drive
-USB_MODEL=$(lsblk -S | grep sda)
-USB_SIZE=$(lsblk | grep sda | head -n1)
+# Removable USB devices are detected only when Crisis Mode is selected.
+# Never assume /dev/sda: device names vary and the wrong assumption can erase a real disk.
 
 # sanity check - make sure LCD or OLED!
 if [ $MODEL = "Jupiter" ]
@@ -115,10 +112,9 @@ then
 	zenity --question --title "Steam Deck BIOS Manager" --text \
 	"This will prepare a USB flash drive for Crisis Mode BIOS flashing. \
 	\n\nMake sure only 1 USB flash drive is inserted and disconnect other USB storage devices. \
-	\n\nUSB flash drive detected - \
-	\n$USB_MODEL \
-	\n$USB_SIZE \
-	\n\nAll contents of the USB flash drive will be deleted! \
+	\n\nThe removable disk will be detected after you continue. \
+	\nYou will be shown its model/size and must type the exact device path before anything is erased. \
+	\n\nAll contents of the confirmed USB flash drive will be deleted! \
 	\n\nIf the wrong USB flash drive is detected then do not proceed! \
 	\n\nDo you want to continue?" --width 650 --height 75
 	if [ $? -eq 1 ]
@@ -127,45 +123,61 @@ then
 	else
 		echo User pressed YES. Continue with the script.
 		
-		# check if flash drive is inserted
-		lsblk | grep sda
-		if [ $? -eq 1 ]
+		# Detect exactly one removable disk instead of assuming /dev/sda.
+		mapfile -t USB_DEVICES < <(lsblk -dnpo NAME,RM,TYPE | awk '$2 == 1 && $3 == "disk" {print $1}')
+		if [ "${#USB_DEVICES[@]}" -ne 1 ]
 		then
-			zenity --warning --title "Steam Deck BIOS Manager" --text "USB flash drive not detected! \
-				\n\nMake sure USB flash drive is plugged in and try the CRISIS option again." --width 400 --height 75
+			zenity --warning --title "Steam Deck BIOS Manager" --text "Expected exactly one removable USB disk, but found ${#USB_DEVICES[@]}.\n\nDisconnect other removable storage and try again." --width 500 --height 100
 		else
-			echo USB flash drive detected. Proceed with the script.
-			# unmount the drive
-			echo -e "$PASSWORD\n" | sudo -S umount /dev/sda{1..15} &> /dev/null
+			USB_DEVICE="${USB_DEVICES[0]}"
+			ROOT_SOURCE=$(findmnt -no SOURCE / 2>/dev/null)
+			ROOT_PARENT=$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1)
+			ROOT_DISK=""
+			[ -n "$ROOT_PARENT" ] && ROOT_DISK="/dev/$ROOT_PARENT"
 
-			# delete all partitions
-			sudo wipefs -a /dev/sda
-
-			# sfdisk to partition the USB flash drive to fat32
-			echo ',,b;' | sudo sfdisk /dev/sda
-
-			# format the drive
-			sudo mkfs.vfat /dev/sda1
-
-			# mount the drive
-			mkdir $(pwd)/temp
-			sudo mount /dev/sda1 $(pwd)/temp
-
-			# copy the BIOS file
-			if [ $MODEL = "Jupiter" ]
+			if [ -n "$ROOT_DISK" ] && [ "$USB_DEVICE" = "$ROOT_DISK" ]
 			then
-				sudo cp $(pwd)/BIOS/F7A0120_sign.fd $(pwd)/temp/F7ARecovery.fd
+				zenity --error --title "Steam Deck BIOS Manager" --text "Refusing to erase the system disk: $USB_DEVICE"
 			else
-				sudo cp $(pwd)/BIOS/F7G0107_sign.fd $(pwd)/temp/F7GRecovery.fd
-			fi
+				USB_DESCRIPTION=$(lsblk -dnpo NAME,MODEL,SIZE "$USB_DEVICE")
+				CONFIRM=$(zenity --entry --title "Confirm USB erase" --text "The following removable disk will be ERASED:\n\n$USB_DESCRIPTION\n\nType the full device path ($USB_DEVICE) to continue:")
+				if [ "$CONFIRM" != "$USB_DEVICE" ]
+				then
+					zenity --warning --title "Steam Deck BIOS Manager" --text "Confirmation did not match. Nothing was erased."
+				else
+					echo "Preparing confirmed USB device: $USB_DEVICE"
+					while read -r part
+					do
+						[ "$part" = "$USB_DEVICE" ] || sudo umount "$part" &> /dev/null || true
+					done < <(lsblk -lnpo NAME "$USB_DEVICE")
 
-			# unmount the drive
-			sync
-			sudo umount $(pwd)/temp
-			rmdir $(pwd)/temp
-			
-			zenity --warning --title "Steam Deck BIOS Manager" --text "USB flash drive for Crisis Mode BIOS flashing has been created! \
-				\n\nThanks to Stanto / www.stanto.com for the writeup regarding Crisis Mode BIOS flashing!" --width 475 --height 75
+					sudo wipefs -a "$USB_DEVICE"
+					echo ',,b;' | sudo sfdisk "$USB_DEVICE"
+					sudo partprobe "$USB_DEVICE" 2>/dev/null || true
+					sleep 1
+					USB_PARTITION=$(lsblk -lnpo NAME,TYPE "$USB_DEVICE" | awk '$2 == "part" {print $1; exit}')
+					if [ -z "$USB_PARTITION" ]
+					then
+						zenity --error --title "Steam Deck BIOS Manager" --text "Could not find the new USB partition. Nothing will be copied."
+					else
+						sudo mkfs.vfat "$USB_PARTITION"
+						MOUNT_DIR=$(mktemp -d)
+						sudo mount "$USB_PARTITION" "$MOUNT_DIR"
+
+						if [ "$MODEL" = "Jupiter" ]
+						then
+							sudo cp "$(pwd)/BIOS/F7A0120_sign.fd" "$MOUNT_DIR/F7ARecovery.fd"
+						else
+							sudo cp "$(pwd)/BIOS/F7G0107_sign.fd" "$MOUNT_DIR/F7GRecovery.fd"
+						fi
+
+						sync
+						sudo umount "$MOUNT_DIR"
+						rmdir "$MOUNT_DIR"
+						zenity --warning --title "Steam Deck BIOS Manager" --text "USB flash drive for Crisis Mode BIOS flashing has been created!\n\nThanks to Stanto / www.stanto.com for the writeup regarding Crisis Mode BIOS flashing!" --width 475 --height 100
+					fi
+				fi
+			fi
 		fi
 	fi
 else
@@ -177,7 +189,7 @@ then
 	clear
 	# create BIOS backup and then flash the BIOS
 	mkdir ~/BIOS_backup 2> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt \
+	sudo /usr/share/jupiter_bios_updater/h2offt \
 		~/BIOS_backup/jupiter-$BIOS_VERSION-bios-backup-$(date +%B%d).bin -O
 	zenity --warning --title "Steam Deck BIOS Manager" --text "BIOS backup has been completed! \
 		\n\nBackup is saved in BIOS_backup folder." --width 400 --height 75
@@ -186,24 +198,24 @@ elif [ "$Choice" == "BLOCK" ]
 then
 	clear
 	# this will prevent BIOS updates to be applied automatically by SteamOS
-	echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable
-	echo -e "$PASSWORD\n" | sudo -S systemctl mask jupiter-biosupdate
-	echo -e "$PASSWORD\n" | sudo -S mkdir -p /foxnet/bios/ &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S touch /foxnet/bios/INHIBIT &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S mkdir /usr/share/jupiter_bios/bak &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S mv /usr/share/jupiter_bios/F* /usr/share/jupiter_bios/bak &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable
+	sudo steamos-readonly disable
+	sudo systemctl mask jupiter-biosupdate
+	sudo mkdir -p /foxnet/bios/ &> /dev/null
+	sudo touch /foxnet/bios/INHIBIT &> /dev/null
+	sudo mkdir /usr/share/jupiter_bios/bak &> /dev/null
+	sudo mv /usr/share/jupiter_bios/F* /usr/share/jupiter_bios/bak &> /dev/null
+	sudo steamos-readonly enable
 	zenity --warning --title "Steam Deck BIOS Manager" --text "BIOS updates has been blocked!" --width 400 --height 75
 
 elif [ "$Choice" == "UNBLOCK" ]
 then
 	clear
-	echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable
-	echo -e "$PASSWORD\n" | sudo -S systemctl unmask jupiter-biosupdate
-	echo -e "$PASSWORD\n" | sudo -S rm -rf /foxnet &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S mv /usr/share/jupiter_bios/bak/F* /usr/share/jupiter_bios &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S rmdir /usr/share/jupiter_bios/bak &> /dev/null
-	echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable
+	sudo steamos-readonly disable
+	sudo systemctl unmask jupiter-biosupdate
+	sudo rm -rf /foxnet &> /dev/null
+	sudo mv /usr/share/jupiter_bios/bak/F* /usr/share/jupiter_bios &> /dev/null
+	sudo rmdir /usr/share/jupiter_bios/bak &> /dev/null
+	sudo steamos-readonly enable
 	zenity --warning --title "Steam Deck BIOS Manager" --text "BIOS updates has been unblocked!" --width 400 --height 75
 
 elif [ "$Choice" == "SREP" ]
@@ -238,7 +250,7 @@ then
 		elif [ "$SREP_Choice" == "ENABLE" ]
 		then
 			# cleanup old SREP config files
-			echo -e "$PASSWORD\n" | sudo -S rm -rf /esp/efi/$MODEL-SREP /esp/SREP.log /esp/SREP_Config.cfg
+			sudo rm -rf /esp/efi/$MODEL-SREP /esp/SREP.log /esp/SREP_Config.cfg
 
 			# Download SREP files
 			echo Downloading Steam Deck SREP  files. Please wait.
@@ -251,8 +263,8 @@ then
 			if [ $? -eq 0 ]
 			then
 				# Copy SREP files to the ESP
-				echo -e "$PASSWORD\n" | sudo -S cp -R $(pwd)/$MODEL-SREP /esp/efi
-				echo -e "$PASSWORD\n" | sudo -S cp $(pwd)/$MODEL-SREP/SREP_Config.cfg /esp
+				sudo cp -R $(pwd)/$MODEL-SREP /esp/efi
+				sudo cp $(pwd)/$MODEL-SREP/SREP_Config.cfg /esp
 
 				# delete the SREP files
 				rm -rf $(pwd)/$MODEL-SREP $(pwd)/$MODEL-SREP.zip
@@ -268,7 +280,7 @@ then
 		elif [ "$SREP_Choice" == "DISABLE" ]
 		then
 			# Delete SREP files from ESP
-			echo -e "$PASSWORD\n" | sudo -S rm -rf /esp/efi/$MODEL-SREP /esp/SREP.log /esp/SREP_Config.cfg
+			sudo rm -rf /esp/efi/$MODEL-SREP /esp/SREP.log /esp/SREP_Config.cfg
 
 			zenity --warning --title "Steam Deck BIOS Manager" --text "SREP files has been removed from the ESP!" --width 350 --height 75
 		fi
@@ -293,16 +305,16 @@ then
 			chmod +x ryzenadj
 
 			# Copy ryzenadj to /usr/bin
-			echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable
-			echo -e "$PASSWORD\n" | sudo -S mv ryzenadj /usr/bin/ryzenadj
-			echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable
+			sudo steamos-readonly disable
+			sudo mv ryzenadj /usr/bin/ryzenadj
+			sudo steamos-readonly enable
 
 		elif [ "$RYZENADJ_Choice" == "UNINSTALL" ]
 		then
 			# Delete ryzenadj from /usr/bin
-			echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable
-			echo -e "$PASSWORD\n" | sudo -S rm /usr/bin/ryzenadj
-			echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable
+			sudo steamos-readonly disable
+			sudo rm /usr/bin/ryzenadj
+			sudo steamos-readonly enable
 
 			zenity --warning --title "Steam Deck BIOS Manager" --text "ryzenadj has been removed!" --width 350 --height 75
 		fi
@@ -320,7 +332,7 @@ then
 		then
 			curl -s -O --output-dir $(pwd)/ -L https://gitlab.com/evlaV/jupiter-PKGBUILD/-/raw/master/bin/jupiter-bios-unlock
 			chmod +x $(pwd)/jupiter-bios-unlock
-			echo -e "$PASSWORD\n" | sudo -S $(pwd)/jupiter-bios-unlock
+			sudo $(pwd)/jupiter-bios-unlock
 			zenity --warning --title "Steam Deck BIOS Manager" --text "BIOS has been unlocked using Smokeless. \
 				\n\nYou can now use Smokeless or access the AMD PBS CBS menu in the BIOS." --width 400 --height 75
 		else
@@ -563,34 +575,34 @@ then
 					echo User pressed YES. Flash $BIOS_Choice immediately!
 
 					# this will prevent BIOS updates to be applied automatically by SteamOS
-					echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable
-					echo -e "$PASSWORD\n" | sudo -S systemctl mask jupiter-biosupdate
-					echo -e "$PASSWORD\n" | sudo -S mkdir -p /foxnet/bios/ 2> /dev/null
-					echo -e "$PASSWORD\n" | sudo -S touch /foxnet/bios/INHIBIT 2> /dev/null
-					echo -e "$PASSWORD\n" | sudo -S mkdir /usr/share/jupiter_bios/bak 2> /dev/null
-					echo -e "$PASSWORD\n" | sudo -S mv /usr/share/jupiter_bios/F* /usr/share/jupiter_bios/bak 2> /dev/null
-					echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable
+					sudo steamos-readonly disable
+					sudo systemctl mask jupiter-biosupdate
+					sudo mkdir -p /foxnet/bios/ 2> /dev/null
+					sudo touch /foxnet/bios/INHIBIT 2> /dev/null
+					sudo mkdir /usr/share/jupiter_bios/bak 2> /dev/null
+					sudo mv /usr/share/jupiter_bios/F* /usr/share/jupiter_bios/bak 2> /dev/null
+					sudo steamos-readonly enable
 
 					# flash the BIOS
-					echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt $(pwd)/BIOS/$BIOS_Choice -all
+					sudo /usr/share/jupiter_bios_updater/h2offt $(pwd)/BIOS/$BIOS_Choice -all
 				fi
 			else
 				echo User pressed YES. Perform BIOS backup and then flash $BIOS_Choice!
 				
 				# this will prevent BIOS updates to be applied automatically by SteamOS
-				echo -e "$PASSWORD\n" | sudo -S steamos-readonly disable
-				echo -e "$PASSWORD\n" | sudo -S systemctl mask jupiter-biosupdate
-				echo -e "$PASSWORD\n" | sudo -S mkdir -p /foxnet/bios/ 2> /dev/null
-				echo -e "$PASSWORD\n" | sudo -S touch /foxnet/bios/INHIBIT 2> /dev/null
-				echo -e "$PASSWORD\n" | sudo -S mkdir /usr/share/jupiter_bios/bak 2> /dev/null
-				echo -e "$PASSWORD\n" | sudo -S mv /usr/share/jupiter_bios/F* /usr/share/jupiter_bios/bak 2> /dev/null
-				echo -e "$PASSWORD\n" | sudo -S steamos-readonly enable
+				sudo steamos-readonly disable
+				sudo systemctl mask jupiter-biosupdate
+				sudo mkdir -p /foxnet/bios/ 2> /dev/null
+				sudo touch /foxnet/bios/INHIBIT 2> /dev/null
+				sudo mkdir /usr/share/jupiter_bios/bak 2> /dev/null
+				sudo mv /usr/share/jupiter_bios/F* /usr/share/jupiter_bios/bak 2> /dev/null
+				sudo steamos-readonly enable
 
 				# create BIOS backup and then flash the BIOS
 				mkdir ~/BIOS_backup 2> /dev/null
-				echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt \
+				sudo /usr/share/jupiter_bios_updater/h2offt \
 					~/BIOS_backup/jupiter-$BIOS_VERSION-bios-backup-$(date +%B%d).bin -O
-				echo -e "$PASSWORD\n" | sudo -S /usr/share/jupiter_bios_updater/h2offt $(pwd)/BIOS/$BIOS_Choice -all
+				sudo /usr/share/jupiter_bios_updater/h2offt $(pwd)/BIOS/$BIOS_Choice -all
 			fi
 		fi
 	else
