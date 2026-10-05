@@ -30,7 +30,6 @@ echo ""
 # =====================
 step "1/7 - Checking prerequisites"
 
-# Authenticate sudo without keeping the password in a shell variable.
 # Authenticate sudo without storing the password in a shell variable.
 SUDO_ASKPASS_HELPER=$(mktemp)
 cat > "$SUDO_ASKPASS_HELPER" <<'EOF'
